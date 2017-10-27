@@ -1,0 +1,102 @@
+#!/usr/bin/perl
+
+use strict;
+
+use utf8::all;
+use Encode qw( encode decode );
+use HTML::Entities qw( encode_entities_numeric decode_entities );
+use List::Util qw( min );
+use Getopt::Long::Descriptive;
+use EBook::EPUB;
+use JSON;
+use File::Temp qw( tempfile );
+use Data::Dumper;
+
+my($opt, $usage) = describe_options(
+  'cp2epub %o',
+  [ 'url|u=s', "the creepypasta.org url to scrape", { required => 1 } ],
+  [ 'output|o=s', "path and filename of final epub to output", { default => 'output.epub' } ],
+  [ 'count|n=i', "the number of stories to include (includes all by default)", { default => 9999 } ],
+  [ 'skip|s=i', "skip this many stories from the list", { default => 0 } ],
+  [ 'title|t=s', "the title for the ebook", { default => 'Creepypasta' } ],
+  [ 'author|a=s', "the author for the ebook", { default => 'creepypasta.org' } ],
+  [ 'help|h', "print help message and exit", { shortcircuit => 1 } ]
+);
+
+print($usage->text), exit if $opt->help;
+
+# create epub
+my $epub = EBook::EPUB->new;
+$epub->add_title($opt->title);
+$epub->add_author($opt->author);
+$epub->add_language('en');
+
+# retrieve index page
+my $idxurl = $opt->url;
+my $index = encode('UTF-8', `curl -sL "$idxurl"`);
+print "got index\n";
+
+# get individual story links
+my @stories = ();
+my $titles = {};
+while($index =~ /<a href="([^"]+)" rel="bookmark">.*?<div class="creepypasta-list-title creepypasta-list-item">([^<]+)<\/div>/sg) {
+  my $url = $1;
+  my $title = decode_entities($2);
+  $title =~ s/^\s+//;
+  $title =~ s/\s+$//;
+  push @stories, $url;
+  $titles->{$url} = $title;
+}
+
+# loop through story links
+my $storycount = 0;
+for(my $i = $opt->skip; $i < min(0+@stories, $opt->count); $i++) {
+
+  #retrieve story
+  my $url = $stories[$i];
+  my $json = encode('UTF-8', `curl -sL "$url" | unfluff`);
+  my $story = decode_json($json);
+  print "got story $titles->{$url}\n";
+
+  my $title = encode_entities_numeric($titles->{$url});
+  my $author = encode_entities_numeric($story->{'author'}->[0]);
+  my $content = encode_entities_numeric($story->{'text'});
+  $content =~ s/Submit your own or an existing creepypasta//;
+  $content =~ s/Help us out by reviewing new submissions//;
+  $content =~ s/(.+?)(\n|$)+/<p>$1<\/p>/g;
+
+  my ($fh, $fname) = tempfile(SUFFIX => '.xhtml');
+  print $fh <<EOF;
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>$title</title>
+  </head>
+  <body>
+    <h1>$title</h1>
+    <h2>$author</h2>
+    $content
+  </body>
+</html>
+EOF
+  close($fh);
+  $storycount++;
+
+  my $pagename = sprintf('chapter%03i.xhtml', $storycount);
+
+  my $chapter = $epub->copy_xhtml($fname, $pagename);
+  $epub->add_navpoint(
+    label => $story->{'title'},
+    id => $chapter,
+    content => $pagename,
+    play_order => $storycount
+  );
+}
+
+if($storycount > 0) {
+  # generate epub
+  print "generating $opt->{output}\n";
+  $epub->pack_zip($opt->output);
+} else {
+  print "woops, no stories were found!\n";
+}
