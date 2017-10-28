@@ -19,6 +19,7 @@ my($opt, $usage) = describe_options(
   [ 'count|n=i', "the number of stories to include (includes all by default)", { default => 9999 } ],
   [ 'skip|s=i', "skip this many stories from the list", { default => 0 } ],
   [ 'title|t=s', "the title for the ebook", { default => 'Creepypasta' } ],
+  [ 'cover|c=s', "path and filename to cover image (1200x1920 jpg)", { default => 'assets/cover.jpg' } ],
   [ 'author|a=s', "the author for the ebook", { default => 'creepypasta.org' } ],
   [ 'help|h', "print help message and exit", { shortcircuit => 1 } ]
 );
@@ -30,10 +31,19 @@ my $epub = EBook::EPUB->new;
 $epub->add_title($opt->title);
 $epub->add_author($opt->author);
 $epub->add_language('en');
+$epub->copy_stylesheet('assets/style.css', 'style.css');
+$epub->copy_file($opt->cover, 'cover.jpg', 'image/jpeg');
+my $cover = $epub->copy_xhtml('assets/cover.xhtml', 'cover.xhtml');
+$epub->add_navpoint(
+  label => $opt->title,
+  id => $cover,
+  content => 'cover.xhtml',
+  play_order => 1
+);
 
 # retrieve index page
 my $idxurl = $opt->url;
-my $index = encode('UTF-8', `curl -sL "$idxurl"`);
+my $index = `curl -sL "$idxurl"`;
 print "got index\n";
 
 # get individual story links
@@ -61,9 +71,13 @@ for(my $i = $opt->skip; $i < min(0+@stories, $opt->count); $i++) {
   my $title = encode_entities_numeric($titles->{$url});
   my $author = encode_entities_numeric($story->{'author'}->[0]);
   my $content = encode_entities_numeric($story->{'text'});
-  $content =~ s/Submit your own or an existing creepypasta//;
-  $content =~ s/Help us out by reviewing new submissions//;
-  $content =~ s/(.+?)(\n|$)+/<p>$1<\/p>/g;
+  $content =~ s/^.*\nRandom Pasta\n//s; # for some reason the story repeats twice, delimited by this
+  $content =~ s/\s*Submit your own or an existing creepypasta\s*//s;
+  $content =~ s/\s*Help us out by reviewing new submissions\s*//s;
+  $content =~ s/(.+?)(\n|$)+/<p>$1<\/p>\n/g;
+  $content =~ s/<p>.+?<\/p>\n//; # first para is just title repeated
+  $content =~ s/<p>/<p class="first">/;
+  $content =~ s/(.*)<p>/$1<p class="meta">/s;
 
   my ($fh, $fname) = tempfile(SUFFIX => '.xhtml');
   print $fh <<EOF;
@@ -71,10 +85,11 @@ for(my $i = $opt->skip; $i < min(0+@stories, $opt->count); $i++) {
 <html xmlns="http://www.w3.org/1999/xhtml">
   <head>
     <title>$title</title>
+    <link href="style.css" rel="stylesheet" type="text/css" />
   </head>
   <body>
     <h1>$title</h1>
-    <h2>$author</h2>
+    <p class="author">$author</p>
     $content
   </body>
 </html>
@@ -86,10 +101,10 @@ EOF
 
   my $chapter = $epub->copy_xhtml($fname, $pagename);
   $epub->add_navpoint(
-    label => $title,
+    label => $titles->{$url},
     id => $chapter,
     content => $pagename,
-    play_order => $storycount
+    play_order => $storycount + 1
   );
 }
 
