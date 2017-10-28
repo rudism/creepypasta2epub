@@ -86,7 +86,7 @@ EOF
 
   my $chapter = $epub->copy_xhtml($fname, $pagename);
   $epub->add_navpoint(
-    label => $story->{'title'},
+    label => $title,
     id => $chapter,
     content => $pagename,
     play_order => $storycount
